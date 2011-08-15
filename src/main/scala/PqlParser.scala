@@ -1,5 +1,7 @@
 package com.github.dmlap.pql
 
+import scala.util.parsing.combinator.syntactical.StandardTokenParsers
+
 /**
  * A probability query language.
  *
@@ -39,14 +41,25 @@ package com.github.dmlap.pql
  * SCond := "=" WS+ """ String """
  * WS := a whitespace character
  */
-object PqlParser {
-  trait Liftable[B[_]] {
-    type T
-    def apply[A]: B[A =:= T]
-  }
+object PqlParser extends StandardTokenParsers {
+  import Pql._
+  // Path[List[String]]
+  // PathEvent[P] => Event[PathEvent[P]]
+  // forall P . Path[P] => PathEvent[P]
+  // forall P . PathEvent[P] => Event[PathEvent[P]]
+  // --> Path[List[String]] => PathEvent[List[String]]
+  // --> PathEvent[List[String]] => Event[PathEvent[List[String]]]
+  lexical.reserved += "not"
+  
+  def path = ident ~ "." ~ ident | ident
+  def event = path | path ~ path
+  def term[P](implicit witness: P => Probability[P]): Parser[P] = null
+}
 
+object Pql {
   sealed trait Probability[P]
-  sealed case class MarginalProbability[F, E[_]](expression: E[F])(implicit witness: Liftable[E, Expression])
+  sealed case class MarginalProbability[E](expression: E)(implicit witness: E => Expression[E])
+  implicit def marginalProbabilityW[E](mp: MarginalProbability[E]): Probability[MarginalProbability[E]] = new Probability[MarginalProbability[E]] {}
   sealed case class ConditionalProbability[E, C](expression: E, condition: C)(implicit witnessE: Expression[E], witnessC: Expression[C])
   implicit object ConditionalProbability extends Probability[ConditionalProbability[_, _]]
 
@@ -55,15 +68,13 @@ object PqlParser {
   implicit object BinaryExpressionW extends Expression[BinaryExpression[_, _, _]]
   sealed case class NegationExpression[E](expression: E)(implicit witness: Expression[E])
   implicit object NegationExpressionW extends Expression[NegationExpression[_]]
-  sealed case class EventExpression[F, E[_]](event: E[F])(implicit witness: Liftable[E, Event])
-  implicit object EventExpressionW extends Liftable[EventExpression, Expression]
-  //implicit def eventExpressionW[E](ee: EventExpression[E]): Expression[EventExpression[E]] =
-    //new Expression[EventExpression[E]] {}
+  sealed case class EventExpression[E](event: E)(implicit witness: E => Event[E])
+  implicit def eventExpressionW[E](ee: EventExpression[E]): Expression[EventExpression[E]] =
+    new Expression[EventExpression[E]] {}
 
   sealed trait Event[E]
   sealed case class PathEvent[P: Path](path: P)
-  implicit object PathEventW extends Liftable[Event]
-  //implicit def pathEventW[P](pe: PathEvent[P]): Event[PathEvent[P]] = new Event[PathEvent[P]] {}
+  implicit def pathEventW[P](pe: PathEvent[P]): Event[PathEvent[P]] = new Event[PathEvent[P]] {}
   sealed case class ConditionalEvent[P, C](path: P, condition: C)(implicit witnessP: Path[P], witnessC: Condition[C])
   implicit object ConditionalEventW extends Event[ConditionalEvent[_, _]]
 
@@ -74,13 +85,6 @@ object PqlParser {
   implicit object NumericConditionW extends Condition[NumericCondition[_, _]]
   case class StringCondition(string: String)
   implicit object StringConditionW extends Condition[StringCondition]
-
-  // Path[List[String]]
-  // PathEvent[P] => Event[PathEvent[P]]
-  // forall P . Path[P] => PathEvent[P]
-  // forall P . PathEvent[P] => Event[PathEvent[P]]
-  // --> Path[List[String]] => PathEvent[List[String]]
-  // --> PathEvent[List[String]] => Event[PathEvent[List[String]]]
 
   sealed trait Integral[N]
   implicit object LongW extends Integral[Long]
