@@ -1,6 +1,7 @@
 package com.github.dmlap.pql
 
-import scala.util.parsing.combinator.syntactical.StandardTokenParsers
+import scala.util.parsing.combinator.syntactical._
+import scala.util.parsing.combinator.PackratParsers
 
 /**
  * A probability query language.
@@ -41,51 +42,76 @@ import scala.util.parsing.combinator.syntactical.StandardTokenParsers
  * SCond := "=" WS+ """ String """
  * WS := a whitespace character
  */
-object PqlParser extends StandardTokenParsers {
+object PqlParser extends StandardTokenParsers with PackratParsers {
   import Pql._
-  // Path[List[String]]
-  // PathEvent[P] => Event[PathEvent[P]]
-  // forall P . Path[P] => PathEvent[P]
-  // forall P . PathEvent[P] => Event[PathEvent[P]]
-  // --> Path[List[String]] => PathEvent[List[String]]
-  // --> PathEvent[List[String]] => Event[PathEvent[List[String]]]
-  lexical.reserved += "not"
+  lexical.delimiters ++= List("(", ")")
+  lexical.reserved += ("P", "not", "and", "or", "|")
+
+  def parseText(text: String): ParseResult[Probability] = probability(new PackratReader(new lexical.Scanner(text)))
   
-  def path = ident ~ "." ~ ident | ident
-  def event = path | path ~ path
-  def term[P](implicit witness: P => Probability[P]): Parser[P] = null
+  def path: PackratParser[Path] = (
+      ident ~ "." ~ ident ^^ { case i ~ _ ~ j => println("paths"); List(i, j) }
+    | ident ^^ { case i => println("path"); List(i) }
+  )
+  def ncond: PackratParser[NumericCondition[Relation, Long]] = (
+    "<" ~ numericLit ^^ { case "<" ~ n => NumericCondition[Relation, Long](Lt, n.toLong) }
+    | "<=" ~ numericLit ^^ { case "<=" ~ n => NumericCondition[Relation, Long](Lte, n.toLong) }
+    | "=" ~ numericLit ^^ { case "=" ~ n => NumericCondition[Relation, Long](Eq, n.toLong) }
+    | ">=" ~ numericLit ^^ { case ">=" ~ n => NumericCondition[Relation, Long](Gte, n.toLong) }
+    | ">" ~ numericLit ^^ { case ">" ~ n => NumericCondition[Relation, Long](Gt, n.toLong) }
+  )
+  def scond: PackratParser[StringCondition] = "=" ~> stringLit ^^ {
+    case string => StringCondition(string)
+  }
+  def cond: PackratParser[Condition] = ncond | scond
+  def event: PackratParser[Event] = (
+    path ^^ { case path => println("path event"); PathEvent(path) }
+    | path ~ cond ^^ { case path ~ cond => println("cond event"); ConditionalEvent(path, cond) }
+  )
+  def binOp: Parser[Operation] = (
+    "and" ^^^ And
+    | "or" ^^^ Or
+    )
+  def expr: PackratParser[Expression] = (
+    expr ~ binOp ~ expr ^^ { case left ~ op ~ right => println("l op r"); BinaryExpression(left, op, right) }
+    | "not" ~ expr ^^ { case _ ~ expr => println("not e"); NegationExpression(expr) }
+    | event ^^ { case event => println("ev"); EventExpression(event) }
+    )
+  def probability: PackratParser[Probability] = (
+    "P" ~ expr ^^ { case _ ~ expr => println("marginal p"); MarginalProbability(expr) }
+    | "P" ~ expr ~ "|" ~ expr ^^ { case _ ~ expr ~ _ ~ cond => println("conditional p"); ConditionalProbability(expr, cond) }
+  )
 }
 
 object Pql {
-  sealed trait Probability[P]
-  sealed case class MarginalProbability[E](expression: E)(implicit witness: E => Expression[E])
-  implicit def marginalProbabilityW[E](mp: MarginalProbability[E]): Probability[MarginalProbability[E]] = new Probability[MarginalProbability[E]] {}
-  sealed case class ConditionalProbability[E, C](expression: E, condition: C)(implicit witnessE: Expression[E], witnessC: Expression[C])
-  implicit object ConditionalProbability extends Probability[ConditionalProbability[_, _]]
+  sealed trait Probability
+  final case class MarginalProbability[E <: Expression](expression: E) extends Probability
+  final case class ConditionalProbability[E <: Expression, C <: Expression](expression: E, condition: C) extends Probability
 
-  sealed trait Expression[E]
-  sealed case class BinaryExpression[L, O, R](left: L, op: O, right: R)(implicit witnessLeft: Expression[L], witnessRight: Expression[R])
-  implicit object BinaryExpressionW extends Expression[BinaryExpression[_, _, _]]
-  sealed case class NegationExpression[E](expression: E)(implicit witness: Expression[E])
-  implicit object NegationExpressionW extends Expression[NegationExpression[_]]
-  sealed case class EventExpression[E](event: E)(implicit witness: E => Event[E])
-  implicit def eventExpressionW[E](ee: EventExpression[E]): Expression[EventExpression[E]] =
-    new Expression[EventExpression[E]] {}
+  sealed trait Expression
+  final case class BinaryExpression[L <: Expression, O, R <: Expression](left: L, op: O, right: R) extends Expression
+  final case class NegationExpression[E <: Expression](expression: E) extends Expression
+  final case class EventExpression[E <: Event](event: E) extends Expression
 
-  sealed trait Event[E]
-  sealed case class PathEvent[P: Path](path: P)
-  implicit def pathEventW[P](pe: PathEvent[P]): Event[PathEvent[P]] = new Event[PathEvent[P]] {}
-  sealed case class ConditionalEvent[P, C](path: P, condition: C)(implicit witnessP: Path[P], witnessC: Condition[C])
-  implicit object ConditionalEventW extends Event[ConditionalEvent[_, _]]
+  sealed trait Operation
+  object And extends Operation
+  object Or extends Operation
 
-  sealed trait Path[P]
-  implicit object ListPathW extends Path[List[String]]
-  sealed trait Condition[C]
-  case class NumericCondition[R, N](relation: R, number: N)(implicit witnessN: Integral[N])
-  implicit object NumericConditionW extends Condition[NumericCondition[_, _]]
-  case class StringCondition(string: String)
-  implicit object StringConditionW extends Condition[StringCondition]
+  sealed trait Event
+  final case class PathEvent[P <: Path](path: P) extends Event
+  final case class ConditionalEvent[P <: Path, C <: Condition](path: P, condition: C) extends Event
 
-  sealed trait Integral[N]
-  implicit object LongW extends Integral[Long]
+  type Path = List[String]
+  sealed trait Condition
+  final case class NumericCondition[R <: Relation, N: Numeric](relation: R, number: N) extends Condition
+  final case class StringCondition(string: String) extends Condition
+
+  sealed trait Relation
+  object Lt extends Relation
+  object Lte extends Relation
+  object Eq extends Relation
+  object Gte extends Relation
+  object Gt extends Relation
+
+  type Identifier = String
 }
