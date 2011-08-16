@@ -73,9 +73,9 @@ object PqlParser extends StandardTokenParsers with PackratParsers {
     | "or" ^^^ Or
     )
   def expr: PackratParser[Expression] = (
-    expr ~ binOp ~ expr ^^ { case left ~ op ~ right => println("l op r"); BinaryExpression(left, op, right) }
-    | "not" ~ expr ^^ { case _ ~ expr => println("not e"); NegationExpression(expr) }
+    "not" ~ expr ^^ { case _ ~ expr => println("not e"); NegationExpression(expr) }
     | event ^^ { case event => println("ev"); EventExpression(event) }
+    | expr ~ binOp ~ expr ^^ { case left ~ op ~ right => println("l op r"); BinaryExpression(left, op, right) }
     )
   def probability: PackratParser[Probability] = (
     "P" ~ expr ^^ { case _ ~ expr => println("marginal p"); MarginalProbability(expr) }
