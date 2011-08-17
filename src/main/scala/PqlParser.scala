@@ -1,7 +1,8 @@
 package com.github.dmlap.pql
 
 import scala.util.parsing.combinator.syntactical._
-import scala.util.parsing.combinator.PackratParsers
+import scala.util.parsing.combinator.{JavaTokenParsers, PackratParsers}
+import scala.util.parsing.input.CharSequenceReader
 
 /**
  * A probability query language.
@@ -27,59 +28,60 @@ import scala.util.parsing.combinator.PackratParsers
  * obj(f): Identifier => (String | Number | Object | Undefined)
  * type(f): Identifier => Set[Object]
  * dist: forall f. Union(type(f))
- *
- * Grammar:
- * Query := "P" Expr
- * Expr := "(" WS* Term WS* ")" | "(" WS* Term WS* "|" WS* Term ")"
- * Term := Expr WS+ BinOp WS+ Expr | "not" WS+ Expr | Event
- * BinOp := "and" | "or"
- *
- * Identifier := as defined in Ecma-262
- * Event := Path | Path WS+ Cond
- * Path := Identifier | Identifier "." Identifier
- * Cond := NCond | SCond
- * NCond := "<" WS+ Number | "<=" WS+ Number | "=" WS+ Number | ">=" WS+ Number | ">" WS+ Number
- * SCond := "=" WS+ """ String """
- * WS := a whitespace character
  */
-object PqlParser extends StandardTokenParsers with PackratParsers {
+object PqlParser extends JavaTokenParsers with PackratParsers {
   import Pql._
-  lexical.delimiters ++= List("(", ")")
-  lexical.reserved += ("P", "not", "and", "or", "|")
 
-  def parseText(text: String): ParseResult[Probability] = probability(new PackratReader(new lexical.Scanner(text)))
+  def parseText(text: String): Either[String, Probability] =
+    probability(new PackratReader(new CharSequenceReader(text))) match {
+      case Success(probability, _) => Right(probability)
+      case Failure(msg, _) => Left(msg)
+    }
   
-  def path: PackratParser[Path] = (
-      ident ~ "." ~ ident ^^ { case i ~ _ ~ j => println("paths"); List(i, j) }
-    | ident ^^ { case i => println("path"); List(i) }
+  lazy val path: PackratParser[Path] = 
+    (ident ~ ("." ~> ident*)) ^^ {
+      case i ~ path => i :: path
+    }
+
+  def ncond: Parser[NumericCondition[Relation, Long]] = (
+    "<" ~ wholeNumber ^^ { case "<" ~ n => NumericCondition[Relation, Long](Lt, n.toLong) }
+    | "<=" ~ wholeNumber ^^ { case "<=" ~ n => NumericCondition[Relation, Long](Lte, n.toLong) }
+    | "=" ~ wholeNumber ^^ { case "=" ~ n => NumericCondition[Relation, Long](Eq, n.toLong) }
+    | ">=" ~ wholeNumber ^^ { case ">=" ~ n => NumericCondition[Relation, Long](Gte, n.toLong) }
+    | ">" ~ wholeNumber ^^ { case ">" ~ n => NumericCondition[Relation, Long](Gt, n.toLong) }
   )
-  def ncond: PackratParser[NumericCondition[Relation, Long]] = (
-    "<" ~ numericLit ^^ { case "<" ~ n => NumericCondition[Relation, Long](Lt, n.toLong) }
-    | "<=" ~ numericLit ^^ { case "<=" ~ n => NumericCondition[Relation, Long](Lte, n.toLong) }
-    | "=" ~ numericLit ^^ { case "=" ~ n => NumericCondition[Relation, Long](Eq, n.toLong) }
-    | ">=" ~ numericLit ^^ { case ">=" ~ n => NumericCondition[Relation, Long](Gte, n.toLong) }
-    | ">" ~ numericLit ^^ { case ">" ~ n => NumericCondition[Relation, Long](Gt, n.toLong) }
-  )
-  def scond: PackratParser[StringCondition] = "=" ~> stringLit ^^ {
+  def scond: Parser[StringCondition] = "=" ~> stringLiteral ^^ {
     case string => StringCondition(string)
   }
-  def cond: PackratParser[Condition] = ncond | scond
-  def event: PackratParser[Event] = (
-    path ^^ { case path => println("path event"); PathEvent(path) }
-    | path ~ cond ^^ { case path ~ cond => println("cond event"); ConditionalEvent(path, cond) }
+  def cond: Parser[Condition] = ncond | scond
+  def event: Parser[Event] = (
+    path ~ cond ^^ { case path ~ cond => ConditionalEvent(path, cond) }
+    | path ^^ { case path => PathEvent(path) }
   )
   def binOp: Parser[Operation] = (
     "and" ^^^ And
     | "or" ^^^ Or
-    )
-  def expr: PackratParser[Expression] = (
-    "not" ~ expr ^^ { case _ ~ expr => println("not e"); NegationExpression(expr) }
-    | event ^^ { case event => println("ev"); EventExpression(event) }
-    | expr ~ binOp ~ expr ^^ { case left ~ op ~ right => println("l op r"); BinaryExpression(left, op, right) }
-    )
-  def probability: PackratParser[Probability] = (
-    "P" ~ expr ^^ { case _ ~ expr => println("marginal p"); MarginalProbability(expr) }
-    | "P" ~ expr ~ "|" ~ expr ^^ { case _ ~ expr ~ _ ~ cond => println("conditional p"); ConditionalProbability(expr, cond) }
+  )
+  lazy val expr: PackratParser[Expression] = (
+    "not" ~ expr ^^ { case _ ~ expr => NegationExpression(expr) }
+    | event ^^ { case event => EventExpression(event) }
+  )
+  lazy val opExpr: PackratParser[Expression] = (
+    (opExpr ~ binOp ~ "(" ~ opExpr ~ ")" ^^ {
+      case left ~ op ~ _ ~ right ~ _ => BinaryExpression(left, op, right)
+    }
+     | opExpr ~ binOp ~ expr ^^ {
+      case left ~ op ~ right => BinaryExpression(left, op, right)
+    }
+     | expr)
+  )
+  lazy val probability: PackratParser[Probability] = (
+    "P(" ~ opExpr ~ "|" ~ opExpr ~ ")" ^^ {
+      case _ ~ expr ~ _ ~ cond ~ _ => ConditionalProbability(expr, cond)
+    }
+    | "P(" ~ opExpr ~ ")" ^^ {
+      case _ ~ expr ~ _ => MarginalProbability(expr)
+    }
   )
 }
 
@@ -112,6 +114,4 @@ object Pql {
   object Eq extends Relation
   object Gte extends Relation
   object Gt extends Relation
-
-  type Identifier = String
 }
